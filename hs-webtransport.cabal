@@ -1,0 +1,75 @@
+cabal-version:   3.0
+name:            hs-webtransport
+version:         0.1.0.0
+synopsis:        WebTransport (RFC 9220) over HTTP/3 for Haskell
+description:
+  A standalone WebTransport implementation building on the @quic@ package.
+  Provides client and server APIs for WebTransport sessions with
+  bidirectional and unidirectional streams.
+license:         BSD-3-Clause
+build-type:      Simple
+extra-source-files:
+  test/servercert.pem
+  test/serverkey.pem
+
+library
+  exposed-modules:
+    Network.WebTransport
+    Network.WebTransport.Client
+    Network.WebTransport.Error
+    Network.WebTransport.Server
+    Network.WebTransport.Stream
+    Network.WebTransport.Internal.ExtendedConnect
+    Network.WebTransport.Internal.H3Settings
+    Network.WebTransport.Internal.SessionStream
+    Network.WebTransport.Internal.VarInt
+  build-depends:
+    , base               >=4.18 && <5
+    , bytestring         >=0.11 && <0.13
+    , containers         >=0.6  && <0.8
+    , network            >=3.1  && <3.3
+    , quic               >=0.3  && <0.4
+    , stm                >=2.5  && <2.6
+    , text               >=2.0  && <2.2
+    , tls                >=2.0  && <2.4
+  hs-source-dirs:  src
+  default-language: GHC2021
+  ghc-options:     -Wall
+  default-extensions:
+    LambdaCase
+    OverloadedStrings
+
+test-suite hs-webtransport-test
+  type:            exitcode-stdio-1.0
+  main-is:         Main.hs
+  other-modules:
+    Network.WebTransport.VarIntSpec
+    Network.WebTransport.H3SettingsSpec
+    Network.WebTransport.SessionStreamSpec
+    Network.WebTransport.ExtendedConnectSpec
+    Network.WebTransport.ServerSpec
+    Network.WebTransport.ClientSpec
+    Network.WebTransport.LoopbackSpec
+    Network.WebTransport.InteropSpec
+  build-depends:
+    , base               >=4.18 && <5
+    , async              >=2.2  && <2.3
+    , bytestring         >=0.11 && <0.13
+    , containers         >=0.6  && <0.8
+    , hedgehog           >=1.4  && <1.6
+    , hs-webtransport
+    , hspec              >=2.11 && <2.12
+    , hspec-hedgehog     >=0.2  && <0.3
+    , network            >=3.1  && <3.3
+    , quic               >=0.3  && <0.4
+    , text               >=2.0  && <2.2
+    , filepath           >=1.4  && <1.6
+    , process            >=1.6  && <1.7
+    , temporary          >=1.3  && <1.4
+    , tls                >=2.0  && <2.4
+  hs-source-dirs:  test
+  default-language: GHC2021
+  ghc-options:     -threaded
+  default-extensions:
+    LambdaCase
+    OverloadedStrings
