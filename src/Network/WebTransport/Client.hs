@@ -3,7 +3,7 @@
 -- Connects to a WebTransport server via QUIC + HTTP/3, performs
 -- the SETTINGS exchange, and establishes sessions via extended CONNECT.
 --
--- Usage:
+-- For a single session:
 --
 -- @
 -- connect defaultClientConfig { ccServerName = "localhost", ccPort = 4433 } $ \\session -> do
@@ -14,13 +14,25 @@
 --   msg <- Stream.recv rx 1024
 --   print msg
 -- @
+--
+-- For multiple sessions on one connection:
+--
+-- @
+-- withConnection cfg $ \\cx -> do
+--   session1 <- newSession cx "\/path1"
+--   session2 <- newSession cx "\/path2"
+--   -- use sessions independently...
+-- @
 module Network.WebTransport.Client
   ( -- * Types
     ClientSession (..)
   , ClientConfig (..)
+  , ClientConnection (..)
   , defaultClientConfig
     -- * Connecting
   , connect
+  , withConnection
+  , newSession
     -- * Session operations
   , openBi
   , openUni
@@ -34,6 +46,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, catch, throwIO)
 import qualified Data.ByteString as BS
 import Data.IORef
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Data.Word (Word64)
 import qualified Network.QUIC as QUIC
@@ -56,6 +69,17 @@ data ClientSession = ClientSession
   , csConnectStrm   :: !QUIC.Stream
   , csIncoming      :: !(TQueue IncomingStream)
   , csClosed        :: !(TVar Bool)
+  }
+
+-- | A WebTransport-capable HTTP/3 connection that can host multiple sessions.
+--
+-- Create with 'withConnection', then use 'newSession' to establish
+-- WebTransport sessions on it.
+data ClientConnection = ClientConnection
+  { cxConnection     :: !QUIC.Connection
+  , cxSessions       :: !(TVar (Map.Map Word64 ClientSession))
+  , cxPeerSettingsOk :: !(IORef Bool)
+  , cxConfig         :: !ClientConfig
   }
 
 data IncomingStream
@@ -81,11 +105,13 @@ defaultClientConfig = ClientConfig
   , ccValidate   = False
   }
 
--- | Connect to a WebTransport server and establish a session.
+-- | Establish a WebTransport-capable HTTP/3 connection.
 --
--- Uses bracket pattern: the session is closed when the callback returns.
-connect :: ClientConfig -> (ClientSession -> IO a) -> IO a
-connect cfg callback = do
+-- Opens a QUIC connection with ALPN @h3@, sends the HTTP/3 control stream
+-- with SETTINGS, and starts the connection-level stream demuxer.
+-- Multiple sessions can be created on this connection using 'newSession'.
+withConnection :: ClientConfig -> (ClientConnection -> IO a) -> IO a
+withConnection cfg callback = do
   let qcfg = QC.defaultClientConfig
         { QC.ccServerName = ccServerName cfg
         , QC.ccPortName = show (ccPort cfg)
@@ -104,51 +130,82 @@ connect cfg callback = do
     -- 1. Open control streams and send SETTINGS
     sendControlStream conn
 
-    -- 2. Wait for peer SETTINGS (async)
+    -- 2. Set up connection state
     peerSettingsOk <- newIORef False
-    _ <- forkIO $ acceptAndRoutePeerStreams conn peerSettingsOk Nothing
-    -- TODO: properly wait for peer SETTINGS before proceeding
+    sessions <- newTVarIO Map.empty
+    let cx = ClientConnection
+          { cxConnection     = conn
+          , cxSessions       = sessions
+          , cxPeerSettingsOk = peerSettingsOk
+          , cxConfig         = cfg
+          }
 
-    -- 3. Send extended CONNECT on a new bidi stream
-    connectStrm <- QUIC.stream conn
-    let authority = BS.pack (map (fromIntegral . fromEnum) (ccServerName cfg))
+    -- 3. Start connection-level demuxer
+    _ <- forkIO $ connectionDemuxer cx
+
+    callback cx
+
+-- | Create a new WebTransport session on an existing connection.
+--
+-- Sends an extended CONNECT request with the given path and waits for
+-- a 2xx response from the server.  The CONNECT stream ID becomes the
+-- session ID.
+newSession :: ClientConnection -> BS.ByteString -> IO ClientSession
+newSession cx path = do
+  let cfg = cxConfig cx
+      conn = cxConnection cx
+
+  -- Send extended CONNECT
+  connectStrm <- QUIC.stream conn
+  let authority = BS.pack (map (fromIntegral . fromEnum) (ccServerName cfg))
                     <> ":" <> BS.pack (map (fromIntegral . fromEnum) (show (ccPort cfg)))
-        requestBlock = encodeConnectRequest authority (ccPath cfg) (ccOrigin cfg)
-        requestFrame = encodeH3Frame H3FrameHeaders requestBlock
-    QUIC.sendStream connectStrm requestFrame
+      requestBlock = encodeConnectRequest authority path (ccOrigin cfg)
+      requestFrame = encodeH3Frame H3FrameHeaders requestBlock
+  QUIC.sendStream connectStrm requestFrame
 
-    -- 4. Read response
-    responseBuf <- readAtLeast connectStrm 1
-    case decodeH3Frame responseBuf of
-      Right (H3FrameHeaders, headerBlock, _rest) ->
-        case decodeHeaders headerBlock of
-          Right headers ->
-            case lookup ":status" headers of
-              Just "200" -> do
-                -- Session established
-                let sid = SessionId (fromIntegral (QUIC.streamId connectStrm))
-                incoming <- newTQueueIO
-                closed <- newTVarIO False
-                let session = ClientSession
-                      { csSessionId = sid
-                      , csConnection = conn
-                      , csConnectStrm = connectStrm
-                      , csIncoming = incoming
-                      , csClosed = closed
-                      }
-                -- Start demuxer for incoming session streams
-                _ <- forkIO $ clientDemuxer session
-                callback session
-              Just status ->
-                throwIO $ SessionRejected 0 status
-              Nothing ->
-                throwIO $ ProtocolError "missing :status in CONNECT response"
-          Left err ->
-            throwIO $ ProtocolError (T.pack ("failed to decode CONNECT response headers: " <> err))
-      Right (other, _, _) ->
-        throwIO $ ProtocolError (T.pack ("expected HEADERS frame, got: " <> show other))
-      Left err ->
-        throwIO $ ProtocolError (T.pack ("failed to decode response frame: " <> err))
+  -- Read response
+  responseBuf <- readAtLeast connectStrm 1
+  case decodeH3Frame responseBuf of
+    Right (H3FrameHeaders, headerBlock, _rest) ->
+      case decodeHeaders headerBlock of
+        Right headers ->
+          case lookup ":status" headers of
+            Just "200" -> do
+              -- Session established
+              let sid = SessionId (fromIntegral (QUIC.streamId connectStrm))
+              incoming <- newTQueueIO
+              closed <- newTVarIO False
+              let session = ClientSession
+                    { csSessionId = sid
+                    , csConnection = conn
+                    , csConnectStrm = connectStrm
+                    , csIncoming = incoming
+                    , csClosed = closed
+                    }
+              -- Register in connection's session map
+              atomically $ modifyTVar' (cxSessions cx) $
+                Map.insert (unSessionId sid) session
+              pure session
+            Just status ->
+              throwIO $ SessionRejected 0 status
+            Nothing ->
+              throwIO $ ProtocolError "missing :status in CONNECT response"
+        Left err ->
+          throwIO $ ProtocolError (T.pack ("failed to decode CONNECT response headers: " <> err))
+    Right (other, _, _) ->
+      throwIO $ ProtocolError (T.pack ("expected HEADERS frame, got: " <> show other))
+    Left err ->
+      throwIO $ ProtocolError (T.pack ("failed to decode response frame: " <> err))
+
+-- | Connect to a WebTransport server and establish a single session.
+--
+-- This is a convenience wrapper around 'withConnection' and 'newSession'.
+-- Uses bracket pattern: the session is closed when the callback returns.
+connect :: ClientConfig -> (ClientSession -> IO a) -> IO a
+connect cfg callback =
+  withConnection cfg $ \cx -> do
+    session <- newSession cx (ccPath cfg)
+    callback session
 
 -- | Send the HTTP/3 control stream with SETTINGS.
 sendControlStream :: QUIC.Connection -> IO ()
@@ -164,81 +221,82 @@ sendControlStream conn = do
   qDec <- QUIC.unidirectionalStream conn
   QUIC.sendStream qDec (encodeVarInt qpackDecoderStreamType)
 
--- | Accept and route peer-initiated unidirectional streams.
-acceptAndRoutePeerStreams :: QUIC.Connection -> IORef Bool -> Maybe a -> IO ()
-acceptAndRoutePeerStreams conn peerSettingsOk _ = go
+-- | Connection-level demuxer for all incoming streams.
+--
+-- Routes H3 control\/QPACK streams at the connection level, and
+-- WebTransport data streams to the appropriate session based on
+-- the session ID in the stream prefix.
+connectionDemuxer :: ClientConnection -> IO ()
+connectionDemuxer cx = go
   where
-    go = do
+    conn = cxConnection cx
+    go = (do
       strm <- QUIC.acceptStream conn
       let sid = QUIC.streamId strm
-      if QUIC.isServerInitiatedUnidirectional sid
-        then do
-          _ <- forkIO $ handlePeerUniStream strm peerSettingsOk
-          go
-        else go
-      `catch` \(_ :: SomeException) -> pure ()
+      _ <- forkIO $
+        if QUIC.isServerInitiatedUnidirectional sid
+          then handleServerUni strm
+          else if QUIC.isServerInitiatedBidirectional sid
+            then handleServerBidi strm
+            else pure ()
+      go) `catch` \(_ :: SomeException) -> pure ()
 
-handlePeerUniStream :: QUIC.Stream -> IORef Bool -> IO ()
-handlePeerUniStream strm peerSettingsOk = do
-  buf <- QUIC.recvStream strm 1
-  if BS.null buf
-    then pure ()
-    else do
-      let readFullVarInt b = case decodeVarInt b of
-            Right (val, _) -> pure val
-            Left _ -> do
-              more <- QUIC.recvStream strm 8
-              if BS.null more
-                then throwIO $ ProtocolError "incomplete stream type varint"
-                else readFullVarInt (b <> more)
-      streamType <- readFullVarInt buf
-      case streamType of
-        0x00 -> do
-          -- Control stream — read SETTINGS
-          frameBuf <- readAtLeast strm 1
-          case decodeH3Frame frameBuf of
-            Right (H3FrameSettings, payload, _) ->
-              case decodeSettings payload of
-                Right settings ->
-                  let hasWT = any (\(k, v) -> k == settingsEnableWebTransport && v == 1) settings
-                   in writeIORef peerSettingsOk hasWT
-                Left _ -> pure ()
-            _ -> pure ()
-        0x02 -> pure ()  -- QPACK encoder
-        0x03 -> pure ()  -- QPACK decoder
-        _ -> pure ()     -- Unknown
+    -- Handle a server-initiated unidirectional stream.
+    -- Could be H3 control (0x00), QPACK (0x02/0x03), or WT uni (0x54).
+    handleServerUni strm = do
+      buf <- QUIC.recvStream strm 1
+      if BS.null buf then pure ()
+      else do
+        streamType <- readFullVarInt strm buf
+        case streamType of
+          0x00 -> do
+            -- H3 control stream — read SETTINGS
+            frameBuf <- readAtLeast strm 1
+            case decodeH3Frame frameBuf of
+              Right (H3FrameSettings, payload, _) ->
+                case decodeSettings payload of
+                  Right settings ->
+                    let hasWT = any (\(k, v) -> k == settingsEnableWebTransport && v == 1) settings
+                     in writeIORef (cxPeerSettingsOk cx) hasWT
+                  Left _ -> pure ()
+              _ -> pure ()
+          0x02 -> pure ()  -- QPACK encoder
+          0x03 -> pure ()  -- QPACK decoder
+          0x54 -> do
+            -- WebTransport unidirectional stream — read session ID
+            sessIdBuf <- QUIC.recvStream strm 8
+            case decodeVarInt sessIdBuf of
+              Right (sessIdVal, _) -> routeToSession sessIdVal (IncomingUni strm)
+              Left _ -> QUIC.stopStream strm (QUIC.ApplicationProtocolError 0)
+          _ -> pure ()     -- Unknown stream type — ignore per spec
 
--- | Demux incoming streams for a client session.
-clientDemuxer :: ClientSession -> IO ()
-clientDemuxer session = go
-  where
-    conn = csConnection session
-    go = do
-      strm <- QUIC.acceptStream conn
-      let sid = QUIC.streamId strm
-      if QUIC.isServerInitiatedBidirectional sid
-        then do
-          -- Read session ID prefix
-          _ <- forkIO $ do
-            buf <- QUIC.recvStream strm 8
-            case decodeVarInt buf of
-              Right (sessIdVal, _)
-                | sessIdVal == unSessionId (csSessionId session) ->
-                    atomically $ writeTQueue (csIncoming session) (IncomingBidi strm)
-              _ -> QUIC.stopStream strm (QUIC.ApplicationProtocolError 0)
-          go
-        else if QUIC.isServerInitiatedUnidirectional sid
-          then do
-            _ <- forkIO $ do
-              buf <- QUIC.recvStream strm 8
-              case decodeUniPrefix buf of
-                Right (0x54, Just sessIdVal, _)
-                  | sessIdVal == unSessionId (csSessionId session) ->
-                      atomically $ writeTQueue (csIncoming session) (IncomingUni strm)
-                _ -> QUIC.stopStream strm (QUIC.ApplicationProtocolError 0)
-            go
-          else go
-      `catch` \(_ :: SomeException) -> pure ()
+    -- Handle a server-initiated bidirectional stream.
+    -- Format: 0x41 varint + session ID varint + stream body
+    handleServerBidi strm = do
+      buf <- QUIC.recvStream strm 16
+      if BS.null buf then pure ()
+      else case decodeBidiPrefix buf of
+        Right (sessIdVal, _leftover) ->
+          routeToSession sessIdVal (IncomingBidi strm)
+        Left _ -> QUIC.resetStream strm (QUIC.ApplicationProtocolError 0)
+
+    routeToSession sessIdVal incoming = do
+      sessions <- readTVarIO (cxSessions cx)
+      case Map.lookup sessIdVal sessions of
+        Just sess -> atomically $ writeTQueue (csIncoming sess) incoming
+        Nothing -> case incoming of
+          IncomingBidi s -> QUIC.resetStream s (QUIC.ApplicationProtocolError 0)
+          IncomingUni s -> QUIC.stopStream s (QUIC.ApplicationProtocolError 0)
+
+-- | Read a full QUIC varint, fetching more bytes if needed.
+readFullVarInt :: QUIC.Stream -> BS.ByteString -> IO Word64
+readFullVarInt strm buf = case decodeVarInt buf of
+  Right (val, _) -> pure val
+  Left _ -> do
+    more <- QUIC.recvStream strm 8
+    if BS.null more
+      then throwIO $ ProtocolError "incomplete stream type varint"
+      else readFullVarInt strm (buf <> more)
 
 -- | Read at least @n@ bytes from a QUIC stream.
 readAtLeast :: QUIC.Stream -> Int -> IO BS.ByteString

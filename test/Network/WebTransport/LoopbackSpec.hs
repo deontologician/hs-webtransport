@@ -177,34 +177,26 @@ handleBidiStreamServer _conn strm = do
   -- Read initial data
   buf <- readAtLeastStream strm 1
   if BS.null buf then pure ()
-  else case decodeH3Frame buf of
-    Right (H3FrameHeaders, headerBlock, _rest) ->
-      -- HTTP/3 request — check if extended CONNECT
-      case decodeHeaders headerBlock of
-        Right headers -> do
-          let method = lookup ":method" headers
-              proto = lookup ":protocol" headers
-          case (method, proto) of
-            (Just "CONNECT", Just "webtransport") -> do
-              -- Send 200 response
-              let responseBlock = encodeConnectResponse
-                  responseFrame = encodeH3Frame H3FrameHeaders responseBlock
-              QUIC.sendStream strm responseFrame
-              -- Session is now established; the CONNECT stream stays open.
-              -- No more data expected on this stream for now.
-              pure ()
-            _ -> pure ()
-        Left _ -> pure ()
-    Right (H3FrameUnknown 0x41, payload, rest) -> do
-      -- WebTransport bidi stream (frame type 0x41)
-      -- Payload contains the session ID varint, rest is data
-      echoData strm rest
-    Right _ -> pure ()
-    Left _ -> do
-      -- Not an H3 frame — try as raw varint (old format)
-      case decodeVarInt buf of
-        Right (_sessId, leftover) -> echoData strm leftover
-        Left _ -> pure ()
+  else case decodeBidiPrefix buf of
+    -- WebTransport bidi stream (0x41 + session ID); echo the body
+    Right (_sessId, rest) -> echoData strm rest
+    Left _ ->
+      -- Not a WT bidi stream; try as H3 HEADERS frame (CONNECT request)
+      case decodeH3Frame buf of
+        Right (H3FrameHeaders, headerBlock, _rest) ->
+          case decodeHeaders headerBlock of
+            Right headers -> do
+              let method = lookup ":method" headers
+                  proto = lookup ":protocol" headers
+              case (method, proto) of
+                (Just "CONNECT", Just "webtransport") -> do
+                  let responseBlock = encodeConnectResponse
+                      responseFrame = encodeH3Frame H3FrameHeaders responseBlock
+                  QUIC.sendStream strm responseFrame
+                  pure ()
+                _ -> pure ()
+            Left _ -> pure ()
+        _ -> pure ()
 
 -- | Echo data on a bidi stream (read → write → FIN).
 echoData :: QUIC.Stream -> BS.ByteString -> IO ()

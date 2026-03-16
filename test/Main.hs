@@ -10,6 +10,7 @@ import qualified Network.WebTransport.ServerSpec
 import qualified Network.WebTransport.ClientSpec
 import qualified Network.WebTransport.LoopbackSpec
 import qualified Network.WebTransport.InteropSpec
+import qualified Network.WebTransport.ConformanceSpec
 
 main :: IO ()
 main = hspec $ do
@@ -21,3 +22,4 @@ main = hspec $ do
   Network.WebTransport.ClientSpec.spec
   Network.WebTransport.LoopbackSpec.spec
   Network.WebTransport.InteropSpec.spec
+  Network.WebTransport.ConformanceSpec.spec
