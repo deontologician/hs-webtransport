@@ -7,3 +7,4 @@ interop/wt-echo-server
 .direnv/
 result
 flake.lock
+.claude/
