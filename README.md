@@ -1,8 +1,10 @@
 # hs-webtransport
 
 A Haskell implementation of [WebTransport](https://www.w3.org/TR/webtransport/) over HTTP/3
-([RFC 9220](https://www.rfc-editor.org/rfc/rfc9220)), built on the
-[quic](https://hackage.haskell.org/package/quic) package.
+([draft-ietf-webtrans-http3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/)),
+built on the [quic](https://hackage.haskell.org/package/quic) package.
+Uses [RFC 9220](https://www.rfc-editor.org/rfc/rfc9220) (Extended CONNECT for HTTP/3) for
+session establishment.
 
 WebTransport provides low-latency, bidirectional communication between a client
 and server using QUIC streams inside an HTTP/3 connection. Unlike WebSockets,
@@ -295,9 +297,9 @@ Tests are organized in three tiers:
   is included in CONNECT requests for compatibility with webtransport-go. This
   will need updating when implementations move to the final RFC.
 
-- **Single session per connection.** The current client API establishes one
-  session per `connect` call. Multiple sessions on a single QUIC connection are
-  not yet supported.
+- **Multiple sessions per connection.** Supported via `withConnection` +
+  `newSession`. The convenience `connect` function still establishes a single
+  session per call.
 
 ## License
 

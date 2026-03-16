@@ -1,4 +1,4 @@
--- | WebTransport (RFC 9220) over HTTP/3 for Haskell.
+-- | WebTransport over HTTP/3 for Haskell (draft-ietf-webtrans-http3).
 --
 -- This module re-exports common types. For the full API, import:
 --
