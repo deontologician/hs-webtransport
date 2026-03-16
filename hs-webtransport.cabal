@@ -7,10 +7,16 @@ description:
   Provides client and server APIs for WebTransport sessions with
   bidirectional and unidirectional streams.
 license:         BSD-3-Clause
+category:        Network, Web
+maintainer:      josh@rime.co
 build-type:      Simple
 extra-source-files:
   test/servercert.pem
   test/serverkey.pem
+
+source-repository head
+  type:     git
+  location: https://github.com/deontologician/hs-webtransport.git
 
 library
   exposed-modules:
