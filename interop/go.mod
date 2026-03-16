@@ -1,4 +1,4 @@
-module github.com/rime-protocol/webtransport-interop
+module github.com/deontologician/webtransport-interop
 
 go 1.23
 

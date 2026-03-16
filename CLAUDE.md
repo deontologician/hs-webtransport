@@ -29,7 +29,7 @@ Implements [draft-ietf-webtrans-http3-15](https://datatracker.ietf.org/doc/draft
 
 - **No `http3` dependency.** The `http3` package's public API doesn't expose the hooks needed for WebTransport (custom SETTINGS, extended CONNECT, stream demuxing). We implement the minimal H3 framing ourselves.
 - **Static-only QPACK.** WebTransport uses a small, fixed set of headers. We encode them using QPACK static table references and literal encoding, with no dynamic table (`SETTINGS_QPACK_MAX_TABLE_CAPACITY = 0`).
-- **No datagrams.** The `quic` package doesn't support RFC 9221 DATAGRAM frames. Stream-based transport works for Rime's needs.
+- **No datagrams.** The `quic` package doesn't support RFC 9221 DATAGRAM frames. Stream-based transport works for our needs.
 - **Multiple sessions per connection.** The client API supports establishing multiple WebTransport sessions on a single QUIC/HTTP/3 connection via `withConnection` + `newSession`.
 
 ## Building & testing

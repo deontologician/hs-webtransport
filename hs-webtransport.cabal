@@ -9,7 +9,7 @@ description:
 license:         MIT
 license-file:    LICENSE
 category:        Network, Web
-maintainer:      josh@rime.co
+maintainer:      deontologician@gmail.com
 build-type:      Simple
 extra-source-files:
   test/servercert.pem

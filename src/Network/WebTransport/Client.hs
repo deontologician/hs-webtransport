@@ -90,7 +90,7 @@ data IncomingStream
 data ClientConfig = ClientConfig
   { ccServerName :: !String
   , ccPort       :: !Int
-  , ccPath       :: !BS.ByteString       -- ^ e.g. @"/rime/v1"@
+  , ccPath       :: !BS.ByteString       -- ^ e.g. @"/wt"@
   , ccOrigin     :: !BS.ByteString       -- ^ e.g. @"https://example.com"@
   , ccValidate   :: !Bool                -- ^ TLS certificate validation
   }

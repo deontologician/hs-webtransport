@@ -9,13 +9,13 @@ spec :: Spec
 spec = describe "ExtendedConnect" $ do
   describe "encodeHeaderBlock / decodeHeaderBlock" $ do
     it "roundtrips a CONNECT request" $ do
-      let block = encodeConnectRequest "localhost:4433" "/rime/v1" "https://localhost"
+      let block = encodeConnectRequest "localhost:4433" "/webtransport" "https://localhost"
       case decodeHeaderBlock block of
         Right headers -> do
           lookup ":method" headers `shouldBe` Just "CONNECT"
           lookup ":scheme" headers `shouldBe` Just "https"
           lookup ":authority" headers `shouldBe` Just "localhost:4433"
-          lookup ":path" headers `shouldBe` Just "/rime/v1"
+          lookup ":path" headers `shouldBe` Just "/webtransport"
           -- :protocol and origin are encoded as literals
           lookup ":protocol" headers `shouldBe` Just "webtransport"
           lookup "origin" headers `shouldBe` Just "https://localhost"
