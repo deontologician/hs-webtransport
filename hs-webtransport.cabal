@@ -6,7 +6,8 @@ description:
   A standalone WebTransport implementation building on the @quic@ package.
   Provides client and server APIs for WebTransport sessions with
   bidirectional and unidirectional streams.
-license:         BSD-3-Clause
+license:         MIT
+license-file:    LICENSE
 category:        Network, Web
 maintainer:      josh@rime.co
 build-type:      Simple
